@@ -63,13 +63,11 @@ class PyTorchParser(Parser):
 
     def rename_NoneType(self, source_node):
         assert source_node.name in self.src_graph.input_layers
+        input_shape = [-1] + list(self.input_shape[2:]) + [self.input_shape[1]]
         IR_node = self._convert_identity_operation(source_node, new_op="DataInput")
-        for dim in self.input_shape:
+        for dim in input_shape:
             new_dim = IR_node.attr["shape"].shape.dim.add()
-            if dim == None:
-                new_dim.size = -1
-            else:
-                new_dim.size = dim
+            new_dim.size = dim
 
 
     def rename_ConvNd(self, source_node):
@@ -135,31 +133,10 @@ class PyTorchParser(Parser):
 
         assign_IRnode_values(IR_node, kwargs)
 
-        print(IR_node)
 
-
-
-
-        '''
-W = \
-        node.next_functions[2][0].next_functions[0][0].variable.data.numpy()
-    output_channels, input_channels = W.shape
-    W = np.transpose(W)
-    weights = [W]
-
-    if node.next_functions[0][0]:
-        bias = node.next_functions[0][0].variable.data.numpy()
-        has_bias = True
-        weights = [W, bias]
-    else:
-        has_bias = False
-
-    dense = keras.layers.Dense(
-        output_channels,
-        weights=weights, use_bias=has_bias, name=output_name
-    )
-    layers[output_name] = dense(layers[input_name])
-    '''
+    def rename_Dropout(self, source_node):
+        IR_node = self._convert_identity_operation(source_node)
+        assign_IRnode_values(IR_node, {'keep_prob' : source_node.get_attr('p')})
 
 
     ####################

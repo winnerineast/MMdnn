@@ -262,13 +262,13 @@ class KitModel(nn.Module):
 
 
     def emit_Reshape(self, IR_node):
-        raise NotImplementedError
-        shape_str = IRGraph.shapeToStr(IR_node.IR_layer.attr["shape"].shape, True)
-        self.add_body(1, "{:<15} = Reshape(name = \"{}\", target_shape = ({}))({})".format(
+        parent = self.IR_graph.get_parent(IR_node.name, [0]).real_variable_name
+        self.add_body(2, "{:<15} = {}.view({}.size(0), {})".format(
             IR_node.variable_name,
-            IR_node.name,
-            shape_str,
-            self.IR_graph.get_node(IR_node.in_edges[0]).real_variable_name))
+            parent,
+            parent,
+            IR_node.get_attr('shape')
+            ))
 
 
     def emit_Tanh(self, IR_node):
