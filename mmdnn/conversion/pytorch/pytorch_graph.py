@@ -30,20 +30,6 @@ class PyTorchGraphNode(GraphNode):
         return self.layer
 
 
-    def get_attr(self, name, default_value = None):
-        raise NotImplementedError()
-        if name in self.layer.attr:
-            attr = self.layer.attr[name]
-            field = attr.WhichOneof('value')
-            val = getattr(attr, field) if field else default_value
-            if isinstance(val, attr_value_pb2.AttrValue.ListValue):
-                return list(val.ListFields()[0][1])
-            else:
-                return val.decode('utf-8') if isinstance(val, bytes) else val
-        else:
-            return default_value
-
-
 class PyTorchGraph(Graph):
 
     def __init__(self, model):
@@ -55,7 +41,6 @@ class PyTorchGraph(Graph):
 
 
     def build(self, shape):
-        shape = tuple([1] + shape)
         dummy_input = torch.autograd.Variable(torch.randn(shape))
         output_node = self.model(dummy_input)
 
