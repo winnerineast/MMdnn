@@ -3,117 +3,21 @@
 #  Licensed under the MIT License. See License.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
+import os
 import numpy as np
-import tensorflow
-from tensorflow.python.framework import tensor_util
-from tensorflow.core.framework import attr_value_pb2
-from mmdnn.conversion.tensorflow.tensorflow_graph import TensorflowGraph
 import mmdnn.conversion.common.IR.graph_pb2 as graph_pb2
 from mmdnn.conversion.common.IR.graph_pb2 import NodeDef, GraphDef, DataType
 from mmdnn.conversion.common.utils import *
 from mmdnn.conversion.common.DataStructure.parser import Parser
+from mmdnn.conversion.pytorch.pytorch_graph import PyTorchGraph
+import torch
 
 
-class TensorflowParser(Parser):
-
-    skip_prefix = [
-        "^",
-        "train_op",
-        "save",
-        "gradients",
-        "init",
-        "global_step",
-        "distort_image",
-        "Adagrad",
-    ]
-
-    skip_scope = [
-        "random_uniform",
-        "Initializer",
-        "optimizer",
-        "weight_loss",
-        "parallel_read",
-        "case"
-    ]
-
-    skip_type = set([
-        "L2Loss",
-        "VariableV2",
-        "Const",
-        "Assign",
-        "RandomUniform",
-        "FIFOQueueV2"
-    ])
-
-    dtype_map = {
-        0 : graph_pb2.DT_UNDEFINED,
-        1 : graph_pb2.DT_FLOAT32,
-        2 : graph_pb2.DT_FLOAT64,
-        3 : graph_pb2.DT_INT32,
-        4 : graph_pb2.DT_UINT8,
-        5 : graph_pb2.DT_INT16,
-        6 : graph_pb2.DT_INT8,
-        7 : graph_pb2.DT_STRING,
-        9 : graph_pb2.DT_INT64
-    }
-
+class PyTorchParser(Parser):
 
     @property
     def src_graph(self):
-        return self.tf_graph
-
-
-    @staticmethod
-    def _load_meta(model_network_path):
-        """Load a tensorflow meta file from disk
-
-        Parameters
-        ----------
-        model_network_path: str
-            Path where the model network path is (protobuf meta file)
-
-        Returns
-        -------
-        model: A tensorflow protobuf file
-        """
-        from tensorflow.core.protobuf import meta_graph_pb2
-        from mmdnn.conversion.common.IR.IR_graph import load_protobuf_from_file
-
-        meta_graph = meta_graph_pb2.MetaGraphDef()
-        load_protobuf_from_file(meta_graph, model_network_path)
-        graph = meta_graph.graph_def
-
-        print ("Tensorflow model file [%s] loaded successfully." % model_network_path)
-        return graph
-
-
-    @staticmethod
-    def _load_weights(model_weight_path):
-        """Load a tensorflow checkpoint file from disk
-
-        Parameters
-        ----------
-        model_weight_path: str
-            Path where the weight path is (checkpoint file)
-
-        Returns
-        -------
-        model: tensor name --> ndarry
-        """
-        reader = tensorflow.train.NewCheckpointReader(model_weight_path)
-        var_to_shape_map = reader.get_variable_to_shape_map()
-        data = dict()
-        for name in var_to_shape_map:
-            tensor = reader.get_tensor(name)
-            data[name] = tensor
-
-        print ("Tensorflow checkpoint file [%s] loaded successfully. [%d] variables loaded." % (model_weight_path, len(data)))
-        return data
-
-
-    @staticmethod
-    def _get_scopes(layer_name):
-        return layer_name.split('/')
+        return self.pytorch_graph
 
 
     def _convert_reduction_operators(self, source_node, new_op = None):
@@ -131,7 +35,7 @@ class TensorflowParser(Parser):
     def _convert_layers_batchnorm(self, source_node):
         # name, op
         IR_node = self.IR_graph.node.add()
-        TensorflowParser._copy_and_reop(source_node, IR_node, 'BatchNorm')
+        PyTorchParser._copy_and_reop(source_node, IR_node, 'BatchNorm')
 
         # epsilon
         epsilon = self.get_parent(source_node.name, [1])
@@ -177,25 +81,16 @@ class TensorflowParser(Parser):
         output_node.real_name = source_node.name
 
 
-    def __init__(self, input_args, dest_nodes = None):
-        super(TensorflowParser, self).__init__()
-
-        # load model files into Keras graph
-        from six import string_types as _string_types
-        if isinstance(input_args, _string_types):
-            model = TensorflowParser._load_meta(input_args)
-        elif isinstance(input_args, tuple):
-            model = TensorflowParser._load_meta(input_args[0])
-            self.ckpt_data = TensorflowParser._load_weights(input_args[1])
-            self.weight_loaded = True
-
-        if dest_nodes != None:
-            from tensorflow.python.framework.graph_util import extract_sub_graph
-            model = extract_sub_graph(model, dest_nodes.split(','))
+    def __init__(self, model_file_name, input_shape):
+        super(PyTorchParser, self).__init__()
+        if not os.path.exists(model_file_name):
+            print("Pytorch model file [{}] is not found.".format(model_file_name))
+            assert False
+        model = torch.load(model_file_name)
 
         # Build network graph
-        self.tf_graph =  TensorflowGraph(model)
-        self.tf_graph.build()
+        self.pytorch_graph = PyTorchGraph(model)
+        self.pytorch_graph.build(input_shape)
 
 
     @classmethod
@@ -207,7 +102,7 @@ class TensorflowParser(Parser):
             if source_node.name.startswith(prefix):
                 return True
 
-        scopes = TensorflowParser._get_scopes(source_node.name)
+        scopes = PyTorchParser._get_scopes(source_node.name)
 
         for s in scopes:
             if s in cls.skip_scope:
@@ -270,15 +165,12 @@ class TensorflowParser(Parser):
     def gen_IR(self):
         for layer in self.src_graph.topological_sort:
             current_node = self.src_graph.get_node(layer)
-
-            if self._skip_node(current_node):
-                continue
-
             node_type = current_node.type
 
             if hasattr(self, "rename_" + node_type):
                 func = getattr(self, "rename_" + node_type)
                 func(current_node)
+
             else:
                 self.rename_UNKNOWN(current_node)
 
@@ -294,19 +186,13 @@ class TensorflowParser(Parser):
             kwargs['data_format'] = source_node.get_attr('data_format')
 
         if 'dtype' in source_node.layer.attr:
-            assert source_node.layer.attr['dtype'].type in TensorflowParser.dtype_map, 'type [{}] is unknown.'.format(source_node.layer.attr['dtype'].type)
-            IR_node.attr["dtype"].type = TensorflowParser.dtype_map[source_node.layer.attr['dtype'].type]
+            assert source_node.layer.attr['dtype'].type in PyTorchParser.dtype_map, 'type [{}] is unknown.'.format(source_node.layer.attr['dtype'].type)
+            IR_node.attr["dtype"].type = PyTorchParser.dtype_map[source_node.layer.attr['dtype'].type]
 
         if '_output_shapes' in source_node.layer.attr:
             IR_node.attr["_output_shapes"].MergeFromString(source_node.layer.attr['_output_shapes'].SerializeToString())
 
         assign_IRnode_values(IR_node, kwargs)
-
-
-    def _convert_inedge(self, source_node, IR_node, start_idx = 0, end_idx = None):
-        if end_idx == None: end_idx = len(source_node.in_edges)
-        for idx in range(start_idx, end_idx):
-            IR_node.input.append(self.src_graph.get_node(source_node.in_edges[idx]).real_name)
 
 
     def _get_bias(self, source_node, IR_node):
@@ -339,9 +225,7 @@ class TensorflowParser(Parser):
 
 
     def rename_UNKNOWN(self, source_node):
-        if source_node.type in self.skip_type:
-            return
-        print("Tensorflow has not supported operator [%s] with name [%s]."
+        print("PyTorch parser has not supported operator [%s] with name [%s]."
               % (source_node.type, source_node.name))
         return
 
@@ -350,7 +234,7 @@ class TensorflowParser(Parser):
         IR_node = self._convert_identity_operation(source_node, new_op='DataInput')
 
         # shape
-        TensorflowParser._copy_shape(source_node, IR_node)
+        PyTorchParser._copy_shape(source_node, IR_node)
 
 
     def rename_Conv2D(self, source_node):
@@ -384,7 +268,7 @@ class TensorflowParser(Parser):
 
     def _convert_identity_operation(self, source_node, in_edge_count = None, new_op = None):
         IR_node = self.IR_graph.node.add()
-        TensorflowParser._copy_and_reop(source_node, IR_node, new_op)
+        PyTorchParser._copy_and_reop(source_node, IR_node, new_op)
         self._convert_inedge(source_node, IR_node, 0, in_edge_count)
         return IR_node
 
@@ -448,7 +332,7 @@ class TensorflowParser(Parser):
                 add_node.real_name = source_node.real_name
                 # FullyConnected Layer
                 # name, op
-                TensorflowParser._copy_and_reop(source_node, IR_node, 'FullyConnected')
+                PyTorchParser._copy_and_reop(source_node, IR_node, 'FullyConnected')
 
                 # get Bias
                 B = self.tf_graph.get_node(self.tf_graph.get_node(source_node.out_edges[0]).in_edges[1]).in_edges[0]
@@ -461,7 +345,7 @@ class TensorflowParser(Parser):
 
         else:
             # Matmul Layer
-            TensorflowParser._copy_and_reop(source_node, IR_node, 'FullyConnected')
+            PyTorchParser._copy_and_reop(source_node, IR_node, 'FullyConnected')
             assign_IRnode_values(IR_node, {'use_bias' : False})
 
 

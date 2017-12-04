@@ -303,12 +303,6 @@ class TensorflowParser(Parser):
         assign_IRnode_values(IR_node, kwargs)
 
 
-    def _convert_inedge(self, source_node, IR_node, start_idx = 0, end_idx = None):
-        if end_idx == None: end_idx = len(source_node.in_edges)
-        for idx in range(start_idx, end_idx):
-            IR_node.input.append(self.src_graph.get_node(source_node.in_edges[idx]).real_name)
-
-
     def _get_bias(self, source_node, IR_node):
         if not source_node.out_edges:
             return
@@ -385,7 +379,7 @@ class TensorflowParser(Parser):
     def _convert_identity_operation(self, source_node, in_edge_count = None, new_op = None):
         IR_node = self.IR_graph.node.add()
         TensorflowParser._copy_and_reop(source_node, IR_node, new_op)
-        self._convert_inedge(source_node, IR_node, 0, in_edge_count)
+        self.convert_inedge(source_node, IR_node, 0, in_edge_count)
         return IR_node
 
 

@@ -11,14 +11,9 @@ import torch
 import torchvision.models as models
 
 
-NETWORKS_MAP = {
-    'inception_v3'      : lambda : models.inception_v3(pretrained=True),
-    'vgg16'             : lambda : models.vgg16(pretrained=True),
-    'vgg19'             : lambda : models.vgg19(pretrained=True),
-    'resnet152'         : lambda : models.resnet152(pretrained=True),
-    'densenet'          : lambda : models.densenet201(pretrained=True),
-    'squeezenet'        : lambda : models.squeezenet1_1(pretrained=True)
-}
+model_names = sorted(name for name in models.__dict__
+    if name.islower() and not name.startswith("__")
+    and callable(models.__dict__[name]))
 
 
 def _main():
@@ -26,7 +21,7 @@ def _main():
 
     parser.add_argument('-n', '--network',
                         type=_text_type, help='Model Type', required=True,
-                        choices=NETWORKS_MAP.keys())
+                        choices=model_names)
 
     parser.add_argument('-i', '--image', type=_text_type, help='Test Image Path')
 
@@ -34,15 +29,16 @@ def _main():
 
     file_name = "imagenet_{}.pt".format(args.network)
     if not os.path.exists(file_name):
-        model = NETWORKS_MAP.get(args.network)
-        model = model()
+        model = models.__dict__[args.network](pretrained=True)
         torch.save(model, file_name)
         print("PyTorch pretrained model is saved as [{}].".format(file_name))
     else:
         print("File [{}] existed!".format(file_name))
-        model = torch.load(file_name)
+        model = None
 
     if args.image:
+        if model == None:
+            model = torch.load(file_name)
         import numpy as np
         func = TestKit.preprocess_func['pytorch'][args.network]
         img = func(args.image)

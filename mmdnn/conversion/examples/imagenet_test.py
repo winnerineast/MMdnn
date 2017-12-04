@@ -77,6 +77,7 @@ class TestKit(object):
 
         'pytorch' : {
             'vgg19'         : lambda path : TestKit.Normalize(path),
+            'vgg19_bn'      : lambda path : TestKit.Normalize(path),
             'resnet152'     : lambda path : TestKit.Normalize(path),
             'inception_v3'  : lambda path : TestKit.Normalize(path),
         }
