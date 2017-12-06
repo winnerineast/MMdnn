@@ -40,7 +40,42 @@ class PyTorchGraph(Graph):
         self.model = model
 
 
+    def build_pth4(self, shape):
+        """
+        build graph for pytorch 0.4.0
+        """
+        import torch.jit
+
+        values = list(self.model.state_dict().values())
+        print (len(values))
+
+        dummy_input = torch.autograd.Variable(torch.randn(shape))
+        trace, output = torch.jit.trace(self.model, (dummy_input, ))
+        torch._C._jit_pass_peephole(trace)
+        torch._C._jit_pass_lint(trace)
+
+        graph = trace.graph()
+        print (dir(graph))
+
+        for node in graph.nodes():
+            print (node)
+            print (node.kind(), node.attributeNames())
+            # for next in node.outputs():
+            #     print (next)
+            #     print (next.uniqueName())
+            #     # print (next.name())
+            #     print(type(next))
+            #     print (dir(next))
+            # assert False
+
+
+        assert False
+
+
     def build(self, shape):
+        """
+        build graph for pytorch 0.2.0
+        """
         dummy_input = torch.autograd.Variable(torch.randn(shape))
         output_node = self.model(dummy_input)
 

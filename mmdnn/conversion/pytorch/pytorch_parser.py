@@ -43,6 +43,7 @@ class PyTorchParser(Parser):
 
 
     def gen_IR(self):
+        print (self.pytorch_graph.model.childrens())
         for layer in self.src_graph.topological_sort:
             current_node = self.src_graph.get_node(layer)
             node_type = current_node.type
@@ -58,16 +59,21 @@ class PyTorchParser(Parser):
     # Layers #
     ##########
     def rename_UNKNOWN(self, source_node):
+        print (source_node.layer)
+        print (source_node.layer.data.size())
+        assert False
         print("PyTorch parser has not supported operator [%s] with name [%s]."
               % (source_node.type, source_node.name))
 
     def rename_NoneType(self, source_node):
         assert source_node.name in self.src_graph.input_layers
-        input_shape = [-1] + list(self.input_shape[2:]) + [self.input_shape[1]]
         IR_node = self._convert_identity_operation(source_node, new_op="DataInput")
-        for dim in input_shape:
+        for dim in self.input_shape:
             new_dim = IR_node.attr["shape"].shape.dim.add()
-            new_dim.size = dim
+            if dim == None:
+                new_dim.size = -1
+            else:
+                new_dim.size = dim
 
 
     def rename_ConvNd(self, source_node):
@@ -133,10 +139,7 @@ class PyTorchParser(Parser):
 
         assign_IRnode_values(IR_node, kwargs)
 
-
-    def rename_Dropout(self, source_node):
-        IR_node = self._convert_identity_operation(source_node)
-        assign_IRnode_values(IR_node, {'keep_prob' : source_node.get_attr('p')})
+        print(IR_node)
 
 
     ####################
