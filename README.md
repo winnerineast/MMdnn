@@ -27,12 +27,14 @@ The intermediate representation will store the network structures as a protobuf 
 
 #### Support frameworks
 
-- [Caffe](http://caffe.berkeleyvision.org/) (Source only)
-- [Keras](https://keras.io/)
-- [MXNet](http://mxnet.incubator.apache.org/)
-- [Tensorflow](https://www.tensorflow.org/) (Experimental)
-- [Microsoft Cognitive Toolkit (CNTK)](http://www.microsoft.com/en-us/cognitive-toolkit) (Destination only)
-- [PyTorch](http://pytorch.org/) (Destination only)
+> [Note] You can click the links to get detail README of each framework
+
+- [Caffe](https://github.com/Microsoft/MMdnn/blob/master/mmdnn/conversion/caffe/README.md) (Source only)
+- [Keras](https://github.com/Microsoft/MMdnn/blob/master/mmdnn/conversion/keras/README.md)
+- [MXNet](https://github.com/Microsoft/MMdnn/blob/master/mmdnn/conversion/mxnet/README.md)
+- [Tensorflow](https://github.com/Microsoft/MMdnn/blob/master/mmdnn/conversion/tensorflow/README.md) (Experimental)
+- [Microsoft Cognitive Toolkit (CNTK)](https://github.com/Microsoft/MMdnn/blob/master/mmdnn/conversion/cntk/README.md) (Destination only)
+- [PyTorch](https://github.com/Microsoft/MMdnn/blob/master/mmdnn/conversion/pytorch/README.md) (Destination only)
 
 #### Tested models
 
@@ -43,7 +45,7 @@ Models                                              | Caffe | Keras | Tensorflow
 [Inception V1](http://arxiv.org/abs/1409.4842v1)    |   √   |   √   |     √      |   √  |   √   | x (No LRN)
 [Inception V3](http://arxiv.org/abs/1512.00567)     |   ×   |   √   |     √      |   √  |   √   |    √
 [ResNet V1 50](https://arxiv.org/abs/1512.03385)    |   ×   |   √   |     √      |   o  |   √   |    √
-[ResNet V2 152](https://arxiv.org/abs/1603.05027)   |   ×   |   √   |     √      |   √  |   √   |    √
+[ResNet V2 152](https://arxiv.org/abs/1603.05027)   |   √   |   √   |     √      |   √  |   √   |    √
 [VGG 19](http://arxiv.org/abs/1409.1556.pdf)        |   √   |   √   |     √      |   √  |   √   |    √
 [MobileNet_v1](https://arxiv.org/pdf/1704.04861.pdf)|   ×   |   √   |     √      | × (No Relu6) | × | ×
 [Xception](https://arxiv.org/pdf/1610.02357.pdf)    |   ×   |   √   |     √      |   ×  |   ×   |    ×

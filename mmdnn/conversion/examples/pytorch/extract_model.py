@@ -27,7 +27,7 @@ def _main():
 
     args = parser.parse_args()
 
-    file_name = "imagenet_{}.pt".format(args.network)
+    file_name = "imagenet_{}.pth".format(args.network)
     if not os.path.exists(file_name):
         model = models.__dict__[args.network](pretrained=True)
         torch.save(model, file_name)
