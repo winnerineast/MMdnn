@@ -52,7 +52,10 @@ layer_num_to_name = {
     36: 'Silence',
     37: 'ContrastiveLoss',
     38: 'Exp',
-    39: 'Deconvolution'}
+    39: 'Deconvolution',
+    40: 'PReLU',
+    41: 'ELU',
+    }
 
 LAYER_DESCRIPTORS = {
     # Caffe Types
@@ -72,7 +75,7 @@ LAYER_DESCRIPTORS = {
     'EuclideanLoss': shape_scalar,
     'Eltwise': shape_identity,
     'Exp': shape_identity,
-    'Flatten': shape_not_implemented,
+    'Flatten': shape_flatten,
     'HDF5Data': shape_data,
     'HDF5Output': shape_identity,
     'HingeLoss': shape_scalar,
@@ -94,13 +97,16 @@ LAYER_DESCRIPTORS = {
     'Silence': shape_identity,
     'Softmax': shape_identity,
     'SoftmaxWithLoss': shape_scalar,
-    'Split': shape_not_implemented,
+    'Split': shape_split,
     'Slice': shape_not_implemented,
     'TanH': shape_identity,
     'WindowData': shape_not_implemented,
     'Threshold': shape_identity,
-    'Reshape' : shape_reshape
-}
+    'Reshape' : shape_reshape,
+    'ResizeBilinear': shape_reshape,
+    'PReLU'   : shape_identity,
+    'ELU' : shape_identity,
+    }
 
 LAYER_TYPES = LAYER_DESCRIPTORS.keys()
 
@@ -141,9 +147,10 @@ class CaffeNode(object):
         self.output_shape = None
         self.metadata = {}
 
-    def add_parent(self, parent_node, from_output):
+    def add_parent(self, parent_node, from_output, index=None):
         assert parent_node not in self.parents
-        self.parents.append((parent_node, from_output))
+        index = len(self.parents) if index is None else index
+        self.parents.insert(index, (parent_node, from_output))
         if self not in parent_node.children:
             parent_node.children.append(self)
 
@@ -265,7 +272,6 @@ class CaffeGraph(object):
                 if node.output_shape is None:
                     node.output_shape = TensorShape(*NodeKind.compute_output_shape(node))
             os.close(tmp_handle)
-            os.remove(tmp_prototxt)
         else:
             for node in sorted_nodes:
                 node.output_shape = TensorShape(*NodeKind.compute_output_shape(node))

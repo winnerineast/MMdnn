@@ -37,8 +37,12 @@ def assign_attr_value(attr, val):
             attr.list.i.extend(val)
         elif isinstance(val[0], TensorShape):
             attr.list.shape.extend(val)
+        elif isinstance(val[0], float):
+            attr.list.f.extend(val)
         else:
             raise NotImplementedError('AttrValue cannot be of list[{}].'.format(val[0]))
+    elif isinstance(val, np.ndarray):
+        assign_attr_value(attr, val.tolist())
     else:
         raise NotImplementedError('AttrValue cannot be of %s' % type(val))
 
@@ -122,11 +126,25 @@ def compute_tf_same_padding(input_shape, kernel_shape, strides, data_format='NHW
 
 
 # network library
+def sizeof_fmt(num, suffix='B'):
+    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+        if abs(num) < 1024.0:
+            return "%3.1f %s%s" % (num, unit, suffix)
+        num /= 1024.0
+    return "%.1f %s%s" % (num, 'Yi', suffix)
+
+
 def _progress_check(count, block_size, total_size):
-    progress_size = int(count * block_size) / 1024
-    percent = int(count * block_size * 100 / total_size)
-    percent = min(percent, 100)
-    sys.stdout.write("\rprogress: {} KB downloaded, {}%".format(progress_size, percent))
+    read_size = count * block_size
+    read_size_str = sizeof_fmt(read_size)
+    if total_size > 0:
+        percent = int(count * block_size * 100 / total_size)
+        percent = min(percent, 100)
+        sys.stdout.write("\rprogress: {} downloaded, {}%.".format(read_size_str, percent))
+        if read_size >= total_size:
+            sys.stdout.write("\n")
+    else:
+        sys.stdout.write("\rprogress: {} downloaded.".format(read_size_str))
     sys.stdout.flush()
 
 
@@ -173,7 +191,7 @@ def _multi_thread_download(url, file_name, file_size, thread_count):
     return file_name
 
 
-def download_file(url, directory='./', local_fname=None, force_write=False, auto_unzip=False):
+def download_file(url, directory='./', local_fname=None, force_write=False, auto_unzip=False, compre_type=''):
     """Download the data from source url, unless it's already here.
 
     Args:
@@ -203,6 +221,7 @@ def download_file(url, directory='./', local_fname=None, force_write=False, auto
         try:
             import wget
             ret = wget.download(url, local_fname)
+            print ("")
         except:
             ret = _single_thread_download(url, local_fname)
 

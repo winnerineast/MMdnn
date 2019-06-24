@@ -3,8 +3,11 @@
 #  Licensed under the MIT License. See License.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
+from __future__ import division
+
 import os
 import sys
+import math
 import numpy as np
 
 import caffe
@@ -15,6 +18,7 @@ import mmdnn.conversion.common.IR.graph_pb2 as graph_pb2
 from mmdnn.conversion.common.IR.graph_pb2 import NodeDef, GraphDef, DataType
 from mmdnn.conversion.common.DataStructure.emitter import Emitter
 from mmdnn.conversion.common.utils import *
+
 
 class CaffeEmitter(Emitter):
 
@@ -33,7 +37,8 @@ class CaffeEmitter(Emitter):
 
     @property
     def header_code(self):
-        return """import numpy as np
+        return """from __future__ import print_function
+import numpy as np
 import sys, argparse
 import caffe
 from caffe import layers as L
@@ -87,6 +92,8 @@ def gen_weight(weight_file, model, prototxt):
             net.params[key][0].data.flat = __weights_dict[key]['scale']
         if 'bias' in __weights_dict[key]:
             net.params[key][1].data.flat = __weights_dict[key]['bias']
+        if 'gamma' in __weights_dict[key]: # used for prelu, not sure if other layers use this too
+            net.params[key][0].data.flat = __weights_dict[key]['gamma']
     net.save(model)
     return net
 
@@ -98,8 +105,9 @@ if __name__=='__main__':
     parser.add_argument('--prototxt', '-p', type=_text_type, default='caffe_converted.prototxt')
     parser.add_argument('--model', '-m', type=_text_type, default='caffe_converted.caffemodel')
     args = parser.parse_args()
-    make_net(args.prototxt)
-    gen_weight(args.weight_file, args.model, args.prototxt)
+    # For some reason argparser gives us unicode, so we need to conver to str first
+    make_net(str(args.prototxt))
+    gen_weight(str(args.weight_file), str(args.model), str(args.prototxt))
 
 """
 
@@ -107,12 +115,12 @@ if __name__=='__main__':
         self.phase = phase
         self.add_body(0, self.header_code)
 
-        # for test
+        #for test
         # with open("graph.txt", 'w') as f:
         #     for layer in self.IR_graph.topological_sort:
         #         current_node = self.IR_graph.get_node(layer)
         #         print("========current_node=========\n{}".format(current_node.layer), file=f)
-        # test end
+        #test end
 
         for layer in self.IR_graph.topological_sort:
             current_node = self.IR_graph.get_node(layer)
@@ -138,16 +146,42 @@ if __name__=='__main__':
             self.save_weights(self.weights_dict, dstWeightPath)
 
 
-
     @staticmethod
     def _shapeToStr(shapes):
         return [dim.size if dim.size > 0 else 1 for dim in shapes.dim]
 
 
+    def _get_symmetric_padding(self, IR_node):
+        stride_h = IR_node.get_attr('strides')[1]
+        stride_w = IR_node.get_attr('strides')[2]
+
+        # check if have pad layer
+        IR_parent_node = self.IR_graph.get_parent(IR_node.name, [0])
+        if IR_parent_node.type == 'Pad':
+            pads = IR_parent_node.get_attr('pads')
+        else:
+            pads = IR_node.get_attr('pads')
+
+        # Pad_h < kernel_h (vgg19 caffe2caffe)
+        if IR_node.type == "Pool":
+            if pads[1]:
+                pad_h = pads[1] + (0 if pads[1] == pads[5] else stride_h)
+            else:
+                pad_h = 0
+            if pads[2]:
+                pad_w = pads[2] + (0 if pads[2] == pads[6] else stride_w)
+            else:
+                pad_w = 0
+        else:
+            pad_h = pads[1] + (0 if pads[1] == pads[5] else stride_h)
+            pad_w = pads[2] + (0 if pads[2] == pads[6] else stride_w)
+
+        return pad_h, pad_w
+
 
     def check_if_need_transpose(self, IR_node):
         parent = self.IR_graph.get_parent(IR_node.name, [0])
-        while parent.type == 'Flatten':
+        while parent.type == 'Flatten' or parent.type == 'Dropout' or parent.type == 'Reshape':
             parent = self.IR_graph.get_parent(parent.name, [0])
         dim = len(parent.layer.attr['_output_shapes'].list.shape[0].dim)
         if dim > 2:
@@ -159,26 +193,100 @@ if __name__=='__main__':
 
 
     def emit_Conv(self, IR_node):
-        self.add_body(1, "n.{:<15} = L.Convolution(n.{}, kernel_size={}, stride={}, num_output={}, pad={}, group={}, \
-bias_term={}, ntop=1)".format(
+        # implement asymmetric paddings by applying symmetric padding then cropping
+        pad_h, pad_w = self._get_symmetric_padding(IR_node)
+
+        num_output = IR_node.get_attr('kernel_shape')[-1]
+        if IR_node.type == "DepthwiseConv":
+            num_group = IR_node.get_attr("kernel_shape")[-2]
+            # num_output = IR_node.get_attr('kernel_shape')[-2]
+            num_output = IR_node.get_attr("_output_shapes")[0].dim[3].size
+        else:
+            num_group = IR_node.get_attr("group", 1)
+
+        self.add_body(1, "n.{:<15} = L.Convolution(n.{}, kernel_h={}, kernel_w={}, stride={}, num_output={}, pad_h={}, pad_w={}, group={}, \
+            bias_term={}, ntop=1)".format(
             IR_node.variable_name,
             self.parent_variable_name(IR_node),
             IR_node.get_attr('kernel_shape')[0],
+            IR_node.get_attr('kernel_shape')[1],
             IR_node.get_attr('strides')[1],
-            IR_node.get_attr('kernel_shape')[-1],
-            IR_node.get_attr('pads')[1],
-            IR_node.get_attr('group', 1),
+            num_output,
+            pad_h,
+            pad_w,
+            num_group,
             IR_node.get_attr('use_bias', False)))
 
         dim = len(IR_node.get_attr('strides')) - 2
         if self.weight_loaded:
+            if IR_node.type == "DepthwiseConv":
+                self.weights_dict[IR_node.name]['weights'] = np.swapaxes(self.weights_dict[IR_node.name]['weights'], -1, -2)
             self.weights_dict[IR_node.name]['weights'] = np.transpose(self.weights_dict[IR_node.name]['weights'], [dim + 1, dim] + list(range(0, dim)))
             self.weights_dict[IR_node.variable_name] = self.weights_dict.pop(IR_node.name)
 
+        self.check_if_need_crop(IR_node)
         # keys = []
         # for key in self.weights_dict[IR_node.name].keys():
         #     keys.append(key)
         # print("=======Layer: {}, keys: {}".format(IR_node.name, keys))
+
+    def compute_output_shape(self, IR_node, kernel_h, kernel_w):
+        parent_node = self.IR_graph.get_parent(IR_node.name, [0])
+
+        if parent_node.get_attr('_output_shapes'):
+            shape = parent_node.get_attr('_output_shapes')[0]
+            shape = shape_to_list(shape)
+            h_i = shape[1]
+            w_i = shape[2]
+            pad_h, pad_w = self._get_symmetric_padding(IR_node)
+            stride_h = IR_node.get_attr('strides')[1]
+            stride_w = IR_node.get_attr('strides')[2]
+
+            if IR_node.type == 'Pool':
+                h_o = (h_i + 2 * pad_h - kernel_h + stride_h - 1) // stride_h + 1
+                w_o = (w_i + 2 * pad_w - kernel_w + stride_w - 1) // stride_w + 1
+            else:
+                h_o = (h_i + 2 * pad_h - kernel_h) // stride_h + 1
+                w_o = (w_i + 2 * pad_w - kernel_w) // stride_w + 1
+            return h_o, w_o
+        else:
+            assert False
+
+
+    def check_if_need_crop(self, IR_node):
+        shape = IR_node.get_attr('_output_shapes')[0]
+        shape = shape_to_list(shape)
+        ir_ho = shape[1]
+        ir_wo = shape[2]
+        if ir_ho <0 or ir_wo<0:
+            return
+        if IR_node.type == 'Pool':
+            k_h = IR_node.get_attr('kernel_shape')[1]
+            k_w = IR_node.get_attr('kernel_shape')[2]
+        else:
+            k_h = IR_node.get_attr('kernel_shape')[0]
+            k_w = IR_node.get_attr('kernel_shape')[1]
+
+        caffe_ho, caffe_wo = self.compute_output_shape(IR_node, k_h, k_w)
+
+        # if asymmetric padding, set offset to 1
+        pads = IR_node.get_attr('pads')
+        offset = [0 if pads[1] == pads[5] else 1,
+                  0 if pads[2] == pads[6] else 1]
+        if caffe_ho > ir_ho or caffe_wo > ir_wo:
+            crop_layer_variable_name = IR_node.variable_name + "_crop"
+            self.add_body(1, "n.{:<15} = L.Crop(n.{}, L.DummyData(shape=[dict(dim=[1, {}, {}, {}])], \
+                ntop=1), ntop=1, offset={})".format(
+                crop_layer_variable_name,
+                IR_node.variable_name,
+                shape[3],
+                ir_ho,
+                ir_wo,
+                offset
+            ))
+            # Change the layer name
+            IR_node.real_name = IR_node.real_name + "_crop"
+
 
     def emit_Pool(self, IR_node):
         pooling_type = IR_node.get_attr('pooling_type')
@@ -189,25 +297,48 @@ bias_term={}, ntop=1)".format(
         elif pooling_type == 'STOCHASTIC':
             pooling_type = P.Pooling.STOCHASTIC
         else:
-            raise ValueError
+            raise ValueError()
 
         if IR_node.layer.attr['global_pooling'].b:
-            self.used_layers.add('GlobalPooling')
             self.add_body(1, "n.{:<15} = L.Pooling(n.{}, pool={}, stride={}, global_pooling=True, ntop=1)".format(
                 IR_node.variable_name,
                 self.parent_variable_name(IR_node),
                 pooling_type,
                 IR_node.get_attr('strides')[1]))
         else:
-            self.add_body(1, "n.{:<15} = L.Pooling(n.{}, pool={}, kernel_size={}, pad_h={}, pad_w={}, stride={}, ntop=1)".format(
-                IR_node.variable_name,
-                self.parent_variable_name(IR_node),
-                pooling_type,
-                IR_node.get_attr('kernel_shape')[1],
-                IR_node.get_attr('pads')[1],
-                IR_node.get_attr('pads')[2],
-                IR_node.get_attr('strides')[1]))
+            pad_h, pad_w = self._get_symmetric_padding(IR_node)
+            pool_size = IR_node.get_attr('kernel_shape')[1:3]
+            if pool_size[0] != pool_size[1]:
+                self.add_body(1, "n.{:<15} = L.Pooling(n.{}, pool={}, kernel_h={}, kernel_w={}, pad_h={}, pad_w={}, stride={}, ntop=1)".format(
+                    IR_node.variable_name,
+                    self.parent_variable_name(IR_node),
+                    pooling_type,
+                    pool_size[0],
+                    pool_size[1],
+                    pad_h,
+                    pad_w,
+                    IR_node.get_attr('strides')[1]))
+            else:
+                self.add_body(1, "n.{:<15} = L.Pooling(n.{}, pool={}, kernel_size={}, pad_h={}, pad_w={}, stride={}, ntop=1)".format(
+                    IR_node.variable_name,
+                    self.parent_variable_name(IR_node),
+                    pooling_type,
+                    pool_size[0],
+                    pad_h,
+                    pad_w,
+                    IR_node.get_attr('strides')[1]))
 
+            # check if need crop output shape
+            self.check_if_need_crop(IR_node)
+
+    def emit_ResizeBilinear(self, IR_node):
+        shape = IR_node.get_attr("_output_shapes")[0]
+        shape = shape_to_list(shape)
+        self.add_body(1, "n.{:<15} = L.ResizeBilinear(n.{}, height={}, width={}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            shape[1],
+            shape[2]))
 
     def emit_UNKNOWN(self, IR_node):
         print(IR_node.IR_layer.name)
@@ -243,28 +374,68 @@ bias_term={}, ntop=1)".format(
 
 
     def emit_BatchNorm(self, IR_node):
+
         self.add_body(1, "n.{:<15} = L.BatchNorm(n.{}, eps={}, use_global_stats={}, ntop=1)".format(
             IR_node.variable_name,
             self.parent_variable_name(IR_node),
             IR_node.get_attr('epsilon'),
             self.phase == 'test'
         ))
+
         scale_layer_var_name = IR_node.variable_name + "_scale"
-        self.add_body(1, "n.{:<15} = L.Scale(n.{}, bias_term={}, ntop=1)".format(
+        self.add_body(1, "n.{:<15} = L.Scale(n.{}, bias_term={}, in_place=True, ntop=1)".format(
             scale_layer_var_name,
             IR_node.variable_name,
             IR_node.get_attr('bias', False)
         ))
-        IR_node.real_name = IR_node.name + "_scale"
+
         if self.weight_loaded:
             self.weights_dict[scale_layer_var_name] = dict()
             if 'scale' in self.weights_dict[IR_node.name]:
                 self.weights_dict[scale_layer_var_name]['scale'] = self.weights_dict[IR_node.name]['scale']
-                #self.weights_dict[IR_node.name].pop('scale', None)
-                self.weights_dict[IR_node.name]['scale'] = 1
-            self.weights_dict[scale_layer_var_name]['bias'] = self.weights_dict[IR_node.name]['bias']
-            self.weights_dict[IR_node.name].pop('bias', None)
+            else:
+                self.weights_dict[scale_layer_var_name]['scale'] = 1
+
+            self.weights_dict[IR_node.name]['scale'] = 1
+
+            if 'bias' in self.weights_dict[IR_node.name]:
+                self.weights_dict[scale_layer_var_name]['bias'] = self.weights_dict[IR_node.name]['bias']
+                self.weights_dict[IR_node.name].pop('bias', None)
+                # change the key "name" to "variable_name", in case of the layer name has invalid characters
+
             self.weights_dict[IR_node.variable_name] = self.weights_dict.pop(IR_node.name)
+
+        IR_node.real_name = IR_node.name + "_scale"
+
+
+    def emit_Scale(self, IR_node):
+        self.add_body(1, "n.{:<15} = L.Scale(n.{}, bias_term={}, in_place=True, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            IR_node.get_attr('use_bias', False)
+        ))
+        if self.weight_loaded:
+            self.weights_dict[IR_node.variable_name] = self.weights_dict.pop(IR_node.name)
+
+
+    def emit_Constant(self, IR_node):
+        if IR_node.get_attr('value'):
+            value = IR_node.get_attr('value')
+        else:
+            value = self.weights_dict[IR_node.name]['value'][0]
+        IR_node_after = self.IR_graph.get_son(IR_node.name, [0])
+        shape = IR_node_after.get_attr("_output_shapes")[0]
+        shape = shape_to_list(shape)
+        if len(shape) == 4:
+            shape[1], shape[3] = shape[3], shape[1]
+            shape[0] = 1
+        shape = list(map(lambda x:str(x), shape))
+
+        self.add_body(1, "n.{:<15} = L.DummyData(shape=[dict(dim=[{}])], data_filler=dict(type='constant', value={}), ntop=1)".format(
+            IR_node.variable_name,
+            ', '.join(shape),
+            value
+        ))
 
 
     def emit_LRN(self, IR_node):
@@ -286,7 +457,25 @@ bias_term={}, ntop=1)".format(
         ))
 
     def emit_Flatten(self, IR_node):
-        IR_node.real_name = self.IR_graph.get_parent(IR_node.name, [0]).real_name
+        self.add_body(1, "n.{:<15} = L.Flatten(n.{})".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            ))
+
+
+    def emit_Squeeze(self, IR_node):
+        shape = IR_node.get_attr("_output_shapes")[0]
+        shape = shape_to_list(shape)
+        if shape:
+            dim_str = "'dim': {}".format(shape)
+            dim_str = " reshape_param={'shape': { " + dim_str + '} }'
+            self.add_body(1, "n.{:<15} = L.Reshape(n.{}, {})".format(
+                IR_node.variable_name,
+                self.parent_variable_name(IR_node),
+                dim_str
+                ))
+        else:
+            IR_node.real_name = self.IR_graph.get_parent(IR_node.name, [0]).real_name
 
 
     def emit_Concat(self, IR_node):
@@ -299,8 +488,10 @@ bias_term={}, ntop=1)".format(
             axis
         ))
 
-    # def emit_Tanh(self, IR_node):
-    #     self._emit_activation(IR_node, 'ops.tanh')
+    def emit_Sigmoid(self, IR_node):
+        self.add_body(1, "n.{:<15} = L.Sigmoid(n.{}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node)))
 
 
     def emit_Relu(self, IR_node):
@@ -311,8 +502,156 @@ bias_term={}, ntop=1)".format(
             in_place))
 
 
+    def emit_Elu(self, IR_node):
+        in_place = True
+        self.add_body(1, "n.{:<15} = L.ELU(n.{}, in_place={}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            in_place))
+
+
+    def emit_LeakyRelu(self, IR_node):
+        in_place = True
+        self.add_body(1, "n.{:<15} = L.ReLU(n.{}, in_place={}, negative_slope={}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            in_place,
+            IR_node.IR_layer.attr['alpha'].f))
+
+
+
+    def emit_PRelu(self, IR_node):
+        in_place = True
+        self.add_body(1, "n.{:<15} = L.PReLU(n.{}, in_place={}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            in_place))
+
+    def emit_Tanh(self, IR_node):
+        self.add_body(1, "n.{:<15} = L.TanH(n.{}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node)))
 
     def emit_Softmax(self, IR_node):
         self.add_body(1, "n.{:<15} = L.Softmax(n.{}, ntop=1)".format(
             IR_node.variable_name,
             self.parent_variable_name(IR_node)))
+
+
+    def emit_Pad(self, IR_node):
+        IR_node.real_name = self.IR_graph.get_parent(IR_node.name, [0]).real_name
+
+    def reduction(self, IR_node, op, axes):
+        # Convert NHWC (IR) to NCHW (Caffe): [0,1,2,3]->[0,3,1,2]
+        if len(axes) == 1:
+            assert (axes[0] == 2)
+        elif len(axes) == 2:
+            assert ((axes[0] == 1) and (axes[1] == 2))
+
+        self.add_body(1, "n.{:<15} = L.Reduction(n.{}, operation={} , axis={} ,ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            op,
+            len(axes)))
+
+        if IR_node.get_attr('keepdims') == True:
+            shape = IR_node.get_attr("_output_shapes")[0]
+            shape = shape_to_list(shape)
+            shape = [1] + [shape[-1]] + shape[1:-1]
+            dim_str = "'dim': {}".format(shape)
+            dim_str = "{'shape': { " + dim_str + '} }'
+            self.add_body(1, "n.{:<15} = L.Reshape(n.{}, reshape_param={}) ".format(
+                IR_node.variable_name + "_reshape",
+                IR_node.real_variable_name,
+                dim_str))
+            IR_node.real_name = IR_node.real_name + '_reshape'
+
+
+    def emit_ReduceMean(self, IR_node):
+        self.reduction(IR_node, 4, IR_node.get_attr('axes'))
+
+    def emit_ReduceSum(self, IR_node):
+        self.reduction(IR_node, 1, IR_node.get_attr('axes'))
+
+    def emit_Relu6(self, IR_node):
+        self.emit_Relu(IR_node)
+
+    def emit_DepthwiseConv(self, IR_node):
+        self.emit_Conv(IR_node)
+
+    def emit_Const(self, IR_node):
+        pass
+    def emit_Shape(self, IR_node):
+        pass
+    def emit_Reshape(self, IR_node):
+        shape = IR_node.get_attr("_output_shapes")[0]
+        shape = shape_to_list(shape)
+        if shape:
+            dim_str = "'dim': {}".format(shape)
+            dim_str = " reshape_param={'shape': { " + dim_str + '} }'
+            self.add_body(1, "n.{:<15} = L.Reshape(n.{}, {})".format(
+                IR_node.variable_name,
+                self.parent_variable_name(IR_node),
+                dim_str
+                ))
+        else:
+            IR_node.real_name = self.IR_graph.get_parent(IR_node.name, [0]).real_name
+
+    def emit_Slice(self, IR_node):
+        pass
+
+    def emit_Pack(self, IR_node):
+        pass
+
+    def emit_Abs(self, IR_node):
+        self.add_body(1, "n.{:<15} = L.AbsVal(n.{}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node)))
+
+    def emit_Sub(self, IR_node):
+        input_layers = ', '.join(('n.' + self.IR_graph.get_node(edge).real_variable_name) for edge in IR_node.in_edges)
+        self.add_body(1, "n.{:<15} = L.Eltwise({}, coeff = [1, -1], ntop=1)".format(
+            IR_node.variable_name,
+            input_layers))
+
+    def emit_Mul(self, IR_node):
+        if len(IR_node.in_edges) == 2:
+            input_layers = ', '.join(('n.' + self.IR_graph.get_node(edge).real_variable_name) for edge in IR_node.in_edges)
+            self.add_body(1, "n.{:<15} = L.Eltwise({}, operation=0, ntop=1)".format(
+            IR_node.variable_name,
+            input_layers))
+        elif len(IR_node.in_edges) == 1:
+            self.emit_Scale(IR_node)
+        else:
+            assert False
+
+    def emit_UpSampling2D(self, IR_node):
+        scales = IR_node.get_attr('scales')
+        scale = tuple(scales)[0]
+
+        shape = IR_node.get_attr('_output_shapes')[0]
+        shape = shape_to_list(shape)
+
+        self.add_body(1, "n.{:<15} = L.Deconvolution(n.{}, convolution_param=dict(kernel_size={}, stride={}, pad={}, num_output={}, group={}, bias_term={}), param=[dict(lr_mult=0)], ntop=1)".format(
+            IR_node.variable_name,
+            IR_node.in_edges[0],
+            2 * scale - scale % 2,
+            scale,
+            int(math.ceil((scale - 1) / 2)),
+            shape[-1],
+            shape[-1],
+            False))
+
+    # def emit_Square(self, IR_node):
+    #     input_layers = ', '.join(('n.' + self.IR_graph.get_node(edge).real_variable_name) for edge in IR_node.in_edges)
+    #     self.add_body(1, "n.{:<15} = L.Square({}, ntop=1)".format(
+    #         IR_node.variable_name,
+    #         input_layers))
+
+
+    def emit_Elu(self, IR_node):
+        in_place = True
+        self.add_body(1, "n.{:<15} = L.ELU(n.{}, in_place={}, ntop=1)".format(
+            IR_node.variable_name,
+            self.parent_variable_name(IR_node),
+            in_place))

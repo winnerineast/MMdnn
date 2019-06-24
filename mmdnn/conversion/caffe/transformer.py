@@ -71,6 +71,10 @@ class DataInjector(object):
         squeeze_indices = [1]  # Squeeze biases.
         if node.kind == NodeKind.InnerProduct:
             squeeze_indices.append(0)  # Squeeze FC.
+        if len(data)==1:
+            squeeze_indices=[0]
+        if node.kind == 'Convolution':
+            return data
         for idx in squeeze_indices:
             data[idx] = np.squeeze(data[idx])
         return data
@@ -176,8 +180,9 @@ class SubNodeFuser(object):
                 continue
             # Rewrite the fused node's children to its parent.
             for child in node.children:
-                child.parents = [(input, idx) for input, idx in child.parents if input != node]
-                child.add_parent(parent, from_output)
+                index = [n for n, (input, idx) in enumerate(child.parents) if input == node][0]
+                child.parents.pop(index)
+                child.add_parent(parent, from_output, index)
             # Disconnect the fused node from the graph.
             parent.children.remove(node)
             fused_nodes.append(node)
@@ -282,6 +287,10 @@ class ParameterNamer(object):
                 names = ('mean', 'var')
                 if len(node.data) == 4:
                     names += ('scale', 'bias')
+            elif node.kind == NodeKind.PReLU:
+                names = ('gamma',)
+            elif node.kind == NodeKind.ELU:
+                names = ('alpha',)
             else:
                 print_stderr('WARNING: Unhandled parameters: {}'.format(node.kind))
                 continue
@@ -333,7 +342,7 @@ class CaffeTransformer(object):
                 ])
         self.graph = graph
         #  self.graph = NodeRenamer()(graph)
-        print_stderr(self.graph)
+        print (self.graph)
 
     def gen_prototxt_from_caffemodel(self, data_path, input_shape):
         prototxt = 'deploy.prototxt'
@@ -358,8 +367,9 @@ class CaffeTransformer(object):
             mapped_node = self.map_node(node)
             if isinstance(mapped_node, list):
                 ret.extend([n for n in mapped_node])
-            else:
+            elif mapped_node:
                 ret.append(mapped_node)
+
 
         name = get_upper_case(get_lower_case(self.graph.name))
         return Graph(name, ret)
@@ -375,8 +385,10 @@ class CaffeTransformer(object):
 
     def map_node(self, node):
         map_func = self.get_handler(node.kind, 'map')
+
         mapped_node = map_func(node)
-        assert mapped_node is not None
+        # assert mapped_node is not None
+
         if isinstance(mapped_node, list):
             ret = []
             for idx, cur_node in enumerate(mapped_node):
@@ -395,10 +407,16 @@ class CaffeTransformer(object):
                 ret.append(cur_node)
             return ret
 
+        # skip when mapped_node is None
+        elif not mapped_node:
+            input_of_next = node.get_only_parent()[0]
+            next_node = node.children
+            for next in next_node:
+                next.parents[0] = tuple([input_of_next, next.parents[0][1]])
+
         else:
             mapped_node.name = node.name
-            # Kit
-            # mapped_node.input.extend(['%s:%s' % (input.name, idx) for input, idx in node.parents])
             mapped_node.input.extend(['%s' % (self.layer_name_map[input.name]) for input, idx in node.parents])
             mapped_node.output.extend(node.output)
             return mapped_node
+

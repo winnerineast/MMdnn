@@ -37,7 +37,7 @@ def shape_not_implemented(node):
 def shape_deconvolution(node):
     input_shape = node.get_only_parent()[0].output_shape
     params = node.kernel_parameters
-    dilation = node.parameters.dilation[0]
+    dilation = 1 if len(node.parameters.dilation) == 0 else node.parameters.dilation[0]
 
     ko_h, ko_w = get_kernel_extents(params, dilation)
     o_h = int(params.s_h) * (input_shape.height - 1) + ko_h - 2 * int(params.p_h)
@@ -60,7 +60,18 @@ def shape_reshape(node):
     shapes = []
     for idx, shape in enumerate(node.layer.reshape_param.shape.dim):
         shapes.append(shape if shape != 0 else last_shape[idx])
-    return TensorShape(shapes[0], shapes[1], shapes[2], shapes[3])
+
+    if len(shapes) == 1 and shapes[0]==-1:
+        total_dim = 1
+        for i in last_shape:
+            total_dim *= i
+        return TensorShape(1, 1, 1, total_dim) # return NHWC format
+
+    elif len(shapes) == 4:
+        return TensorShape(shapes[0], shapes[1], shapes[2], shapes[3])
+
+    else:
+        raise NotImplementedError
 
 def shape_data(node):
     if node.output_shape:
@@ -100,9 +111,30 @@ def shape_convolution(node):
 
 
 def shape_pool(node):
+    if node.parameters.global_pooling:
+        return shape_global_pooling(node)
     return get_strided_kernel_output_shape(node, math.ceil)
 
 
 def shape_inner_product(node):
     input_shape = node.get_only_parent()[0].output_shape
     return TensorShape(input_shape.batch_size, node.parameters.num_output, 1, 1)
+
+
+def shape_global_pooling(node):
+    input_shape = node.get_only_parent()[0].output_shape
+    params = node.kernel_parameters
+    has_c_o = hasattr(params, 'num_output')
+    c = params.num_output if has_c_o else input_shape.channels
+    return TensorShape(input_shape.batch_size, c, 1, 1)  # Output height and width is 1 when global_pooling
+
+
+def shape_split(node):
+    input_shape = node.get_only_parent()[0].output_shape
+    return TensorShape(input_shape.batch_size, input_shape.channels, input_shape.height, input_shape.width)
+
+
+def shape_flatten(node):
+    input_shape = node.get_only_parent()[0].output_shape
+    return TensorShape(input_shape.batch_size, input_shape.channels * input_shape.height * input_shape.width, 1, 1)
+

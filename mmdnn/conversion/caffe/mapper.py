@@ -10,7 +10,13 @@ from mmdnn.conversion.common.IR.graph_pb2 import TensorShape
 
 
 def get_handler_name(node_kind):
-    return node_kind.lower() if len(node_kind) <= 4 else get_lower_case(node_kind)
+    if node_kind is None:
+        return node_kind
+    else:
+        if len(node_kind) <= 4:
+            return node_kind.lower()
+        else:
+            return get_lower_case(node_kind)
 
 
 class NodeMapper(object):
@@ -120,20 +126,47 @@ class NodeMapper(object):
         kwargs['group'] = node.parameters.group
         return Node.create('ConvTranspose', **kwargs)
 
+
     @classmethod
     def map_crop(cls, node):
+        kwargs = {}
+        cls._convert_output_shape(kwargs, node)
         offset = node.parameters.offset
         if offset:
-            kwargs = {'offset': int(node.parameters.offset[0])}
-            return Node.create('crop', **kwargs)
-        else:
-            return Node.create('crop')
+            if len(offset) == 1:
+                kwargs['border'] = [offset[0], offset[0], 0, 0]
+            else:
+                kwargs['border'] = [offset[0], offset[1], 0, 0]
+
+        return Node.create('Crop', **kwargs)
+
+
+    @classmethod
+    def map_elu(cls, node):
+        kwargs = {}
+        cls._convert_output_shape(kwargs, node)
+        return Node.create('ELU', **kwargs)
+
 
     @classmethod
     def map_relu(cls, node):
         kwargs = {}
         cls._convert_output_shape(kwargs, node)
         return Node.create('Relu', **kwargs)
+
+
+    @classmethod
+    def map_p_re_lu(cls, node):
+        # print(node.parameters)
+        # assert False
+        try:
+            scale_value = float(node.parameters.filler.value)
+            kwargs = {'gamma' : scale_value}
+        except ConversionError:
+            kwargs = {'gamma' : 0.25}
+        cls._convert_output_shape(kwargs, node)
+        return Node.create('PRelu', **kwargs)
+
 
     @classmethod
     def map_pooling(cls, node):
@@ -168,7 +201,15 @@ class NodeMapper(object):
         #TODO: Axis
         assert node.parameters.axis == 1
         #TODO: Unbiased
-        kwargs = {'use_bias' : node.parameters.bias_term, 'units' : node.parameters.num_output}
+        shape = TensorShape()
+        dim = shape.dim.add()
+        dim.size = -1
+        dim = shape.dim.add()
+        dim.size = 1
+        for i in node.output_shape[1:]:
+            dim.size *= i
+        kwargs = {'use_bias' : node.parameters.bias_term, 'units' : node.parameters.num_output,
+                '_output_shapes': [shape]}
 
         # check if need the Flatten layer
         parent, _ = node.get_only_parent()
@@ -215,19 +256,26 @@ class NodeMapper(object):
 
     @classmethod
     def map_scale(cls, node):
-        raise NotImplementedError
         # TODO: The gamma parameter has to be set (in node.data?) and this should work.
         # Also, mean should be set to 0, and var to 1, just to be safe.
-        scale_value = float(node.parameters.filler.value)
-        kwargs = {'scale' : True, 'bias' : False, 'gamma' : scale_value, 'epsilon': 0}
-        return Node.create('BatchNorm', **kwargs)
+        if node.data:
+            raise NotImplementedError
+            scale_value = float(node.parameters.filler.value)
+            kwargs = {'scale' : False, 'bias' : False, 'gamma' : scale_value, 'epsilon': 0}
+            cls._convert_output_shape(kwargs, node)
+            return Node.create('Scale', **kwargs)
+        else:
+            return Node.create('Mul')
+
 
     @classmethod
     def map_eltwise(cls, node):
         operations = {0: 'Mul', 1: 'Add', 2: 'Max'}
         op_code = node.parameters.operation
         try:
-            return Node.create(operations[op_code])
+            kwargs = {}
+            cls._convert_output_shape(kwargs, node)
+            return Node.create(operations[op_code], **kwargs)
         except KeyError:
             raise ConversionError('Unknown elementwise operation: {}'.format(op_code))
 
@@ -251,4 +299,15 @@ class NodeMapper(object):
 
     @classmethod
     def map_flatten(cls, node):
-        return Node.create('Flatten')
+        return cls._add_flatten_layer(node)
+
+    @classmethod
+    def map_split(cls, node):
+        # skip the split node
+        return
+
+    @classmethod
+    def map_elu(cls, node):
+        kwargs = {}
+        cls._convert_output_shape(kwargs, node)
+        return Node.create('ELU', **kwargs)

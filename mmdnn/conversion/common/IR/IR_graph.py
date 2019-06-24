@@ -52,7 +52,7 @@ class IRGraphNode(GraphNode):
         return self.layer.op
 
     def set_attrs(self, attrs):
-        assign_IRnode_values(self, attrs)
+        assign_IRnode_values(self.layer, attrs)
 
 
     def get_attr(self, name, default_value = None):
@@ -60,8 +60,13 @@ class IRGraphNode(GraphNode):
             attr = self.layer.attr[name]
             field = attr.WhichOneof('value')
             val = getattr(attr, field) if field else default_value
+            if not val:
+                return val
             if isinstance(val, AttrValue.ListValue):
-                return list(val.ListFields()[0][1])
+                if val.ListFields():
+                    return list(val.ListFields()[0][1])
+                else:
+                    return val.ListFields()
             else:
                 return val.decode('utf-8') if isinstance(val, bytes) else val
         else:
@@ -104,3 +109,27 @@ class IRGraph(Graph):
 
         self.filter_node()
         super(IRGraph, self).build()
+        self.input_layers = list(filter(lambda x: self.layer_map[x].type != 'Constant', self.input_layers))
+
+
+    def rebuild(self):
+        self.input_layers.clear()
+        self.output_layers.clear()
+        self.topological_sort.clear()
+        self.filter_node()
+        super(IRGraph, self).build()
+        self.input_layers = list(filter(lambda x: self.layer_map[x].type != 'Constant', self.input_layers))
+
+
+    def clear_out_scope_node(self):
+
+        def _clear_list_out_scope(list_):
+            for idx in range(len(list_) -1, -1, -1):
+                node = self.get_node(list_[idx])
+                if node.type != 'Scope' and node.get_attr('scope'):
+                    del list_[idx]
+
+        _clear_list_out_scope(self.input_layers)
+        _clear_list_out_scope(self.topological_sort)
+        _clear_list_out_scope(self.output_layers)
+

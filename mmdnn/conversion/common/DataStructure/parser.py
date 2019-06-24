@@ -80,7 +80,7 @@ class Parser(object):
     def convert_inedge(self, source_node, IR_node, start_idx = 0, end_idx = None):
         if end_idx == None: end_idx = len(source_node.in_edges)
         for idx in range(start_idx, end_idx):
-            IR_node.input.append(self.src_graph.get_node(source_node.in_edges[idx]).real_name)
+            IR_node.input.append(self.src_graph.get_node(source_node.in_edges[idx]).real_name.lstrip('_'))
 
 
     @staticmethod
@@ -93,3 +93,12 @@ class Parser(object):
     @staticmethod
     def channel_first_shape_to_IR(shape):
         return [shape[0]] + list(shape[2:]) + [shape[1]]
+
+    @staticmethod
+    def channel_first_axis_to_IR(index):
+        if index == 0:
+            return 0
+        elif index == 1:
+            return -1
+        else:
+            return index - 1
