@@ -63,9 +63,9 @@ import tensorflow as tf
 weights_dict = dict()
 def load_weights_from_file(weight_file):
     try:
-        weights_dict = np.load(weight_file).item()
+        weights_dict = np.load(weight_file, allow_pickle=True).item()
     except:
-        weights_dict = np.load(weight_file, encoding='bytes').item()
+        weights_dict = np.load(weight_file, allow_pickle=True, encoding='bytes').item()
 
     return weights_dict
 
@@ -862,6 +862,23 @@ def KitModel(weight_file = None):
             )
             return code
 
+    def emit_Affine(self, IR_node, in_scope=False):
+        if in_scope:
+            raise NotImplementedError
+        else:
+            self.used_layers.add('Affine')
+            if IR_node.layer.attr.get('beta', None) is None:
+                bias = None
+            else:
+                bias = IR_node.layer.attr['beta'].f
+            code = "{:<15} = Affine(name='{}', scale={}, bias={})({})".format(
+                IR_node.variable_name,
+                IR_node.name,
+                IR_node.layer.attr['gamma'].f,
+                bias,
+                self.parent_variable_name(IR_node))
+            return code
+
     def emit_yolo(self, IR_node, in_scope=False):
         self.used_layers.add('Yolo')
         self.yolo_parameter = [IR_node.get_attr('anchors'),
@@ -1181,6 +1198,28 @@ class Scale(Layer):
 
     def compute_output_shape(self, input_shape):
         return input_shape""")
+
+
+    def _layer_Affine(self):
+        self.add_body(0, '''
+from keras.engine import Layer, InputSpec
+from keras import initializers
+from keras  import backend as K
+
+class Affine(Layer):
+    def __init__(self, scale, bias=None, **kwargs):
+        super(Affine, self).__init__(**kwargs)
+        self.gamma = scale
+        self.beta = bias
+
+    def call(self, inputs, training=None):
+        input_shape = K.int_shape(inputs)
+        # Prepare broadcasting shape.
+        return self.gamma * inputs + self.beta
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+        ''')
 
 
     def _layer_Split(self):
